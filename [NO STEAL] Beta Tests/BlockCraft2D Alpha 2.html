@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Minecraft</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #3b3b3b;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Minecraftia', 'Arial', sans-serif;
+            overflow: hidden;
+            color: white;
+        }
+        canvas {
+            border: 2px solid #000;
+            background-color: #87CEEB; /* Sky Blue */
+            cursor: crosshair;
+        }
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+        }
+        #toolbar-container {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            pointer-events: all;
+        }
+        #toolbar {
+            display: flex;
+            background-color: rgba(0, 0, 0, 0.5);
+            border: 2px solid #555;
+            border-radius: 5px;
+            padding: 5px;
+        }
+        .slot {
+            width: 50px;
+            height: 50px;
+            border: 2px solid #888;
+            margin: 2px;
+            background-size: contain;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-color: rgba(100, 100, 100, 0.5);
+            display: flex;
+            justify-content: flex-end;
+            align-items: flex-end;
+            font-size: 14px;
+            color: white;
+            text-shadow: 2px 2px 2px black;
+            user-select: none;
+            position: relative;
+        }
+        .toolbar-slot.selected {
+            border-color: #FFF;
+            box-shadow: 0 0 10px #FFF;
+        }
+        #inventory-screen {
+            display: none; /* Initially hidden */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 500px;
+            background-color: rgba(13, 1, 1, 0.85);
+            border: 4px solid #555;
+            border-radius: 10px;
+            padding: 15px;
+            z-index: 20;
+            flex-direction: column;
+            gap: 20px;
+            pointer-events: all;
+        }
+        .crafting-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+        }
+        #crafting-grid-2x2, #crafting-grid-3x3 {
+             display: grid;
+             gap: 2px;
+        }
+        #crafting-grid-2x2 { grid-template-columns: repeat(2, 54px); }
+        #crafting-grid-3x3 { grid-template-columns: repeat(3, 54px); }
+
+        #inventory-grid {
+            display: grid;
+            grid-template-columns: repeat(9, 54px);
+            gap: 2px;
+        }
+        .item-count { padding: 2px 4px; }
+        #debug-container {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.5);
+            padding: 5px;
+            border-radius: 5px;
+            z-index: 30;
+            pointer-events: all;
+            display: flex;
+            align-items: center;
+        }
+        #day-night-toggle {
+            margin-left: 10px;
+            padding: 2px 5px;
+            border: 1px solid white;
+            cursor: pointer;
+            background: #555;
+        }
+        .held-item-cursor {
+            position: absolute;
+            width: 50px;
+            height: 50px;
+            z-index: 100;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui-container">
+        <div id="inventory-screen">
+            <h3>Crafting</h3>
+            <div class="crafting-container">
+                 <div id="crafting-grid-2x2"></div>
+                 <div id="crafting-grid-3x3" style="display:none;"></div>
+                <div id="crafting-arrow">➡️</div>
+                <div id="crafting-output" class="slot" data-slot-type="crafting_output" data-slot-index="0"></div>
+            </div>
+            <h3>Inventory</h3>
+             <div id="inventory-grid"></div>
+        </div>
+        <div id="toolbar-container">
+            <div id="toolbar"></div>
+        </div>
+        <div id="debug-container">
+            <span id="debug-coords"></span>
+            <button id="day-night-toggle">Toggle Night</button>
+        </div>
+        <div id="held-item-cursor" class="slot held-item-cursor" style="display: none;"></div>
+    </div>
+
+
+    <script>
+        // --- Game Setup ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const debugCoords = document.getElementById('debug-coords');
+        const inventoryScreen = document.getElementById('inventory-screen');
+        const inventoryGridEl = document.getElementById('inventory-grid');
+        const craftingGrid2x2El = document.getElementById('crafting-grid-2x2');
+        const craftingGrid3x3El = document.getElementById('crafting-grid-3x3');
+        const craftingOutputEl = document.getElementById('crafting-output');
+        const toolbarElement = document.getElementById('toolbar');
+        const heldItemCursorEl = document.getElementById('held-item-cursor');
+        const dayNightToggleBtn = document.getElementById('day-night-toggle');
+
+        // --- Game Constants ---
+        const BLOCK_SIZE = 32;
+        const WORLD_WIDTH = 300;
+        const WORLD_HEIGHT = 150;
+        const GRAVITY = 0.5;
+        const PLAYER_SPEED = 3.5;
+        const JUMP_STRENGTH = 12;
+        const REACH = 5 * BLOCK_SIZE;
+
+        // --- Block & Item Definitions ---
+        const ITEMS = {
+            AIR:           { id: 0, color: 'transparent', solid: false, name: 'Air' },
+            GRASS:         { id: 1, color: '#6A9B3B', solid: true, name: 'Grass Block' },
+            DIRT:          { id: 2, color: '#8B4513', solid: true, name: 'Dirt' },
+            STONE:         { id: 3, color: '#808080', solid: true, name: 'Stone' },
+            COAL_ORE:      { id: 4, color: '#606060', solid: true, name: 'Coal Ore' },
+            IRON_ORE:      { id: 5, color: '#A09080', solid: true, name: 'Iron Ore' },
+            WOOD:          { id: 10, color: '#663300', solid: false, name: 'Wood Log' },
+            LEAVES:        { id: 11, color: 'rgba(0,128,0,0.7)', solid: false, name: 'Leaves' },
+            WOOD_PLANKS:   { id: 12, color: '#A98158', solid: true, name: 'Wood Planks' },
+            CRAFTING_TABLE:{ id: 13, color: '#8B4513', solid: true, name: 'Crafting Table' },
+            STICK:         { id: 14, color: '#A0522D', name: 'Stick' },
+            WOOD_SWORD:    { id: 15, color: '#D2B48C', name: 'Wooden Sword', damage: 10 },
+            WOOD_PICKAXE:  { id: 16, color: '#D2B48C', name: 'Wooden Pickaxe' },
+        };
+
+        // --- Crafting Recipes ---
+        const RECIPES = [
+            { output: { id: ITEMS.WOOD_PLANKS.id, count: 4 }, shape: [[ITEMS.WOOD.id]], grid: 2, shapeless: true },
+            { output: { id: ITEMS.STICK.id, count: 4 }, shape: [[ITEMS.WOOD_PLANKS.id], [ITEMS.WOOD_PLANKS.id]], grid: 2 },
+            { output: { id: ITEMS.CRAFTING_TABLE.id, count: 1 }, shape: [[ITEMS.WOOD_PLANKS.id, ITEMS.WOOD_PLANKS.id], [ITEMS.WOOD_PLANKS.id, ITEMS.WOOD_PLANKS.id]], grid: 2 },
+            { output: { id: ITEMS.WOOD_SWORD.id, count: 1 }, shape: [[ITEMS.WOOD_PLANKS.id], [ITEMS.WOOD_PLANKS.id], [ITEMS.STICK.id]], grid: 3 },
+            { output: { id: ITEMS.WOOD_PICKAXE.id, count: 1 }, shape: [[ITEMS.WOOD_PLANKS.id, ITEMS.WOOD_PLANKS.id, ITEMS.WOOD_PLANKS.id], [null, ITEMS.STICK.id, null], [null, ITEMS.STICK.id, null]], grid: 3 },
+        ];
+
+        // --- Game State ---
+        let world = [];
+        let mobs = [];
+        const player = {
+            x: 0, y: 0, width: BLOCK_SIZE * 0.8, height: BLOCK_SIZE * 1.8,
+            vx: 0, vy: 0, onGround: false, hp: 100,
+            inventory: new Array(36).fill(null),
+            craftingGrid: new Array(9).fill(null),
+            selectedSlot: 0, isInventoryOpen: false, heldItem: null, isCraftingTableOpen: false,
+        };
+        const game = {
+            isDay: true,
+            time: 0,
+            dayCycleLength: 6000 // 6000 frames = 100 seconds
+        };
+        const camera = { x: 0, y: 0 };
+        const keys = {};
+        let mouseClientX = 0, mouseClientY = 0;
+        let craftingResult = null;
+        
+        // --- Perlin Noise ---
+        const P = new Uint8Array(512);
+        (function setupPerlin() {
+            const p = new Uint8Array(256);
+            for(let i=0; i < 256; i++) p[i] = i;
+            for(let i=255; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [p[i], p[j]] = [p[j], p[i]];
+            }
+            for(let i=0; i < 256; i++) P[i] = P[i+256] = p[i];
+        })();
+
+        function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+        function lerp(t, a, b) { return a + t * (b - a); }
+        function grad(hash, x) { return (hash & 1) === 0 ? x : -x; }
+        function noise(x) {
+            const X = Math.floor(x) & 255;
+            x -= Math.floor(x);
+            const u = fade(x);
+            return lerp(u, grad(P[X], x), grad(P[X+1], x-1)) * 2;
+        }
+
+        // --- World Generation ---
+        function generateWorld() {
+            const surfaceY = WORLD_HEIGHT / 2;
+            for (let x = 0; x < WORLD_WIDTH; x++) {
+                world[x] = [];
+                const hillHeight = noise(x * 0.05) * 15; // Controls hill height
+                const grassHeight = Math.floor(surfaceY + hillHeight);
+                const stoneHeight = grassHeight + 5 + Math.floor(noise(x * 0.02) * 5);
+
+                for (let y = 0; y < WORLD_HEIGHT; y++) {
+                    if (y < grassHeight) world[x][y] = ITEMS.AIR.id;
+                    else if (y === grassHeight) world[x][y] = ITEMS.GRASS.id;
+                    else if (y < stoneHeight) world[x][y] = ITEMS.DIRT.id;
+                    else world[x][y] = ITEMS.STONE.id;
+                }
+            }
+            for (let x=10; x < WORLD_WIDTH - 10; x++) {
+                 if (Math.random() < 0.1) {
+                    for(let y=0; y< WORLD_HEIGHT; y++) {
+                        if(getItem(x,y).id === ITEMS.GRASS.id) {
+                            generateTree(x,y-1);
+                            x += 5; // Space out trees
+                            break;
+                        }
+                    }
+                 }
+            }
+        }
+        
+        function generateTree(x, y) {
+            const height = 4 + Math.floor(Math.random() * 3);
+            for(let i = 0; i < height; i++) {
+                if(y-i >=0) setBlock(x, y-i, ITEMS.WOOD.id);
+            }
+            const leafRadius = 2;
+            for(let dx = -leafRadius; dx <= leafRadius; dx++) {
+                for(let dy = -leafRadius; dy <= leafRadius; dy++) {
+                    if (dx === 0 && dy === 0 || Math.abs(dx) === leafRadius && Math.abs(dy) === leafRadius) continue;
+                    if (getItem(x + dx, y - height + 1 + dy).id === ITEMS.AIR.id) {
+                        setBlock(x + dx, y - height + 1 + dy, ITEMS.LEAVES.id);
+                    }
+                }
+            }
+        }
+        
+        function findPlayerSpawn() {
+            const midX = Math.floor(WORLD_WIDTH / 2);
+            for (let y = 0; y < WORLD_HEIGHT; y++) {
+                if (getItem(midX, y).id === ITEMS.GRASS.id) {
+                    player.x = midX * BLOCK_SIZE;
+                    player.y = (y - 2) * BLOCK_SIZE;
+                    return;
+                }
+            }
+        }
+
+        // --- Game Logic ---
+        function update() {
+            updateDayNight();
+            if (!player.isInventoryOpen) {
+                updatePlayer();
+            }
+            updateMobs();
+            
+            camera.x = player.x - canvas.width / 2;
+            camera.y = player.y - canvas.height / 2;
+            
+            debugCoords.textContent = `Player: (${Math.floor(player.x/BLOCK_SIZE)}, ${Math.floor(player.y/BLOCK_SIZE)})`;
+        }
+
+        function updatePlayer() {
+            player.vx = 0;
+            if (keys['KeyA'] || keys['ArrowLeft']) player.vx = -PLAYER_SPEED;
+            if (keys['KeyD'] || keys['ArrowRight']) player.vx = PLAYER_SPEED;
+            if ((keys['KeyW'] || keys['ArrowUp'] || keys['Space']) && player.onGround) {
+                player.vy = -JUMP_STRENGTH;
+                player.onGround = false;
+            }
+            player.vy += GRAVITY;
+            handleCollisions(player);
+        }
+
+        function updateMobs() {
+            mobs.forEach(mob => {
+                if (game.isDay && mob.type === 'zombie' && isMobOnSurface(mob)) {
+                    mob.hp -= 0.2; // Burn in sunlight
+                }
+
+                mob.vy += GRAVITY;
+                
+                const dx = player.x - mob.x;
+                if (Math.abs(dx) < BLOCK_SIZE * 15) { // aggro range
+                    mob.vx = Math.sign(dx) * mob.speed;
+                    if (Math.abs(dx) < BLOCK_SIZE) mob.vx = 0;
+                } else {
+                    mob.vx = 0;
+                }
+
+                handleCollisions(mob);
+
+                const frontBlockX = Math.floor((mob.x + (mob.vx > 0 ? mob.width : 0)) / BLOCK_SIZE);
+                const frontBlockY = Math.floor((mob.y + mob.height -1) / BLOCK_SIZE);
+                if (mob.onGround && mob.vx !== 0 && getItem(frontBlockX, frontBlockY).solid) {
+                    mob.vy = -JUMP_STRENGTH * 0.7;
+                }
+            });
+            mobs = mobs.filter(m => m.hp > 0);
+        }
+
+        function updateDayNight() {
+            game.time = (game.time + 1) % game.dayCycleLength;
+            const wasDay = game.isDay;
+            game.isDay = game.time < game.dayCycleLength / 2;
+            dayNightToggleBtn.textContent = game.isDay ? "Toggle Night" : "Toggle Day";
+
+            if (!game.isDay && wasDay) {
+                spawnMobs();
+            }
+        }
+
+        function spawnMobs() {
+            for(let i=0; i<5; i++) {
+                const spawnX = Math.floor(player.x / BLOCK_SIZE) + (Math.random() - 0.5) * 40;
+                for (let y = 0; y < WORLD_HEIGHT; y++) {
+                    if (getItem(spawnX, y).id === ITEMS.GRASS.id) {
+                        mobs.push({
+                            x: spawnX * BLOCK_SIZE, y: (y-2) * BLOCK_SIZE,
+                            width: BLOCK_SIZE * 0.8, height: BLOCK_SIZE * 1.8,
+                            vx: 0, vy: 0, onGround: false,
+                            hp: 100, maxHp: 100, type: 'zombie', speed: 1,
+                            lastHitTime: 0
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+        
+        function isMobOnSurface(mob) {
+            const mobX = Math.floor(mob.x / BLOCK_SIZE);
+            const mobY = Math.floor(mob.y / BLOCK_SIZE);
+            for (let y = mobY; y >= 0; y--) {
+                if (getItem(mobX, y).solid) return false;
+            }
+            return true;
+        }
+        
+        function getItem(x, y) {
+            if (x < 0 || x >= WORLD_WIDTH || y < 0 || y >= WORLD_HEIGHT) return { ...ITEMS.AIR };
+            const blockId = world[x] ? world[x][y] : ITEMS.AIR.id;
+            return Object.values(ITEMS).find(b => b.id === blockId) || { ...ITEMS.AIR };
+        }
+
+        function setBlock(x, y, blockId) {
+            if (x >= 0 && x < WORLD_WIDTH && y >= 0 && y < WORLD_HEIGHT) {
+                world[x][y] = blockId;
+            }
+        }
+        
+        function handleCollisions(entity) {
+            entity.x += entity.vx;
+            let pLeft = Math.floor(entity.x / BLOCK_SIZE);
+            let pRight = Math.floor((entity.x + entity.width) / BLOCK_SIZE);
+            let pTop = Math.floor(entity.y / BLOCK_SIZE);
+            let pBottom = Math.floor((entity.y + entity.height - 1) / BLOCK_SIZE);
+
+            for (let y = pTop; y <= pBottom; y++) {
+                if (getItem(pLeft, y).solid || getItem(pRight, y).solid) {
+                    entity.x -= entity.vx;
+                    entity.vx = 0;
+                    break;
+                }
+            }
+
+            entity.onGround = false;
+            entity.y += entity.vy;
+            pLeft = Math.floor(entity.x / BLOCK_SIZE);
+            pRight = Math.floor((entity.x + entity.width) / BLOCK_SIZE);
+            pTop = Math.floor(entity.y / BLOCK_SIZE);
+            pBottom = Math.floor((entity.y + entity.height) / BLOCK_SIZE);
+            
+            for (let x = pLeft; x <= pRight; x++) {
+                if (getItem(x, pBottom).solid) {
+                    entity.y = pBottom * BLOCK_SIZE - entity.height;
+                    entity.onGround = true;
+                    entity.vy = 0;
+                    return;
+                }
+            }
+             for (let x = pLeft; x <= pRight; x++) {
+                 if (getItem(x, pTop).solid) {
+                    entity.y = (pTop + 1) * BLOCK_SIZE;
+                    entity.vy = 0;
+                    return;
+                }
+            }
+        }
+
+        // --- Rendering ---
+        function draw() {
+            const dayColor = {r: 135, g: 206, b: 235};
+            const nightColor = {r: 25, g: 25, b: 112};
+            let progress;
+            let r,g,b;
+
+            if (game.time < game.dayCycleLength * 0.4) { progress = 1; } // Day
+            else if (game.time < game.dayCycleLength * 0.5) { progress = 1 - (game.time - game.dayCycleLength * 0.4) / (game.dayCycleLength * 0.1); } // Sunset
+            else if (game.time < game.dayCycleLength * 0.9) { progress = 0; } // Night
+            else { progress = (game.time - game.dayCycleLength * 0.9) / (game.dayCycleLength * 0.1); } // Sunrise
+
+            r = Math.round(lerp(progress, nightColor.r, dayColor.r));
+            g = Math.round(lerp(progress, nightColor.g, dayColor.g));
+            b = Math.round(lerp(progress, nightColor.b, dayColor.b));
+            
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.save();
+            ctx.translate(-camera.x, -camera.y);
+            
+            const startX = Math.floor(camera.x / BLOCK_SIZE);
+            const endX = Math.ceil((camera.x + canvas.width) / BLOCK_SIZE);
+            const startY = Math.floor(camera.y / BLOCK_SIZE);
+            const endY = Math.ceil((camera.y + canvas.height) / BLOCK_SIZE);
+
+            for (let x = startX; x < endX; x++) {
+                for (let y = startY; y < endY; y++) {
+                    const item = getItem(x, y);
+                    if (item.id !== ITEMS.AIR.id) {
+                        ctx.fillStyle = item.color;
+                        ctx.fillRect(x * BLOCK_SIZE, y * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+                    }
+                }
+            }
+            
+            ctx.fillStyle = 'blue';
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+            
+            mobs.forEach(mob => {
+                ctx.fillStyle = 'green';
+                ctx.fillRect(mob.x, mob.y, mob.width, mob.height);
+                if (Date.now() - mob.lastHitTime < 2000) {
+                     ctx.fillStyle = 'red';
+                     ctx.fillRect(mob.x, mob.y - 10, mob.width, 5);
+                     ctx.fillStyle = '#00ff00';
+                     ctx.fillRect(mob.x, mob.y - 10, mob.width * (mob.hp / mob.maxHp), 5);
+                }
+            });
+            
+            if (!player.isInventoryOpen) {
+                const mousePos = getMouseWorldPos(mouseClientX, mouseClientY);
+                if (mousePos) {
+                     ctx.strokeStyle = 'white';
+                     ctx.lineWidth = 2;
+                     ctx.strokeRect(mousePos.blockX * BLOCK_SIZE, mousePos.blockY * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+                }
+            }
+            ctx.restore();
+        }
+        
+        // --- UI, Inventory & Crafting ---
+        function initUI() {
+            for(let i = 0; i < 9; i++) {
+                const slot = document.createElement('div');
+                slot.classList.add('slot', 'toolbar-slot');
+                slot.dataset.slotType = 'inventory'; slot.dataset.slotIndex = i;
+                toolbarElement.appendChild(slot);
+            }
+            for(let i = 0; i < 27; i++){
+                const slot = document.createElement('div');
+                slot.classList.add('slot');
+                slot.dataset.slotType = 'inventory'; slot.dataset.slotIndex = i + 9;
+                inventoryGridEl.appendChild(slot);
+            }
+            for(let i=0; i<4; i++) {
+                const slot = document.createElement('div');
+                slot.classList.add('slot');
+                slot.dataset.slotType = 'crafting'; slot.dataset.slotIndex = i;
+                craftingGrid2x2El.appendChild(slot);
+            }
+            for(let i=0; i<9; i++) {
+                const slot = document.createElement('div');
+                slot.classList.add('slot');
+                slot.dataset.slotType = 'crafting'; slot.dataset.slotIndex = i;
+                craftingGrid3x3El.appendChild(slot);
+            }
+            updateInventoryUI();
+        }
+        
+        function updateInventoryUI() {
+            updateHeldItemCursor();
+            const toolbarSlots = toolbarElement.children;
+            for(let i = 0; i < 9; i++) {
+                updateSlot(toolbarSlots[i], player.inventory[i]);
+                toolbarSlots[i].classList.toggle('selected', i === player.selectedSlot && !player.isInventoryOpen);
+            }
+            if(player.isInventoryOpen) {
+                const inventorySlots = inventoryGridEl.children;
+                for(let i = 0; i < 27; i++) updateSlot(inventorySlots[i], player.inventory[i+9]);
+
+                const gridToShow = player.isCraftingTableOpen ? craftingGrid3x3El : craftingGrid2x2El;
+                const gridToHide = player.isCraftingTableOpen ? craftingGrid2x2El : craftingGrid3x3El;
+                gridToShow.style.display = 'grid';
+                gridToHide.style.display = 'none';
+                
+                const craftingSlots = gridToShow.children;
+                const gridSize = player.isCraftingTableOpen ? 9 : 4;
+                for(let i = 0; i < gridSize; i++) updateSlot(craftingSlots[i], player.craftingGrid[i]);
+                updateSlot(craftingOutputEl, craftingResult);
+            }
+        }
+
+        function updateSlot(slotElement, item) {
+            slotElement.innerHTML = '';
+            slotElement.style.backgroundColor = 'rgba(100, 100, 100, 0.5)';
+            if(item) {
+                const block = Object.values(ITEMS).find(b => b.id === item.id);
+                if (block) {
+                    slotElement.style.backgroundColor = block.color;
+                    if(item.count > 1) {
+                         const countEl = document.createElement('div');
+                         countEl.classList.add('item-count');
+                         countEl.textContent = item.count;
+                         slotElement.appendChild(countEl);
+                    }
+                }
+            }
+        }
+
+        function updateHeldItemCursor() {
+            if (player.isInventoryOpen && player.heldItem) {
+                heldItemCursorEl.style.display = 'flex';
+                heldItemCursorEl.style.left = `${mouseClientX - 25}px`;
+                heldItemCursorEl.style.top = `${mouseClientY - 25}px`;
+                updateSlot(heldItemCursorEl, player.heldItem);
+            } else {
+                heldItemCursorEl.style.display = 'none';
+            }
+        }
+        
+        function toggleInventory() {
+            player.isInventoryOpen = !player.isInventoryOpen;
+            inventoryScreen.style.display = player.isInventoryOpen ? 'flex' : 'none';
+            if (!player.isInventoryOpen) { // Closing inventory
+                 if (player.heldItem) {
+                    addToInventory(player.heldItem.id, player.heldItem.count);
+                    player.heldItem = null;
+                }
+                 player.isCraftingTableOpen = false;
+                 for(let i = 0; i < player.craftingGrid.length; i++) {
+                    if (player.craftingGrid[i]) {
+                         addToInventory(player.craftingGrid[i].id, player.craftingGrid[i].count);
+                         player.craftingGrid[i] = null;
+                    }
+                }
+            }
+            checkCrafting();
+            updateInventoryUI();
+        }
+        
+        function addToInventory(itemId, count = 1) {
+            for(let i = 0; i < player.inventory.length; i++) {
+                const item = player.inventory[i];
+                if(item && item.id === itemId && item.count < 64) {
+                    const canAdd = Math.min(count, 64 - item.count);
+                    item.count += canAdd; count -= canAdd;
+                    if (count <= 0) { updateInventoryUI(); return true; }
+                }
+            }
+            for(let i = 0; i < player.inventory.length; i++) {
+                if(!player.inventory[i]) {
+                    player.inventory[i] = { id: itemId, count: count };
+                    updateInventoryUI(); return true;
+                }
+            }
+            return false;
+        }
+
+        function checkCrafting() {
+            const gridSize = player.isCraftingTableOpen ? 3 : 2;
+            let currentShape = [];
+            for (let r=0; r < gridSize; r++) {
+                let row = [];
+                for(let c=0; c < gridSize; c++) {
+                    row.push(player.craftingGrid[r * gridSize + c]?.id || null);
+                }
+                currentShape.push(row);
+            }
+
+            let matchedRecipe = null;
+            for (const recipe of RECIPES) {
+                if(recipe.grid > gridSize) continue;
+                
+                if (recipe.shapeless) {
+                    const itemsInGrid = player.craftingGrid.map(i => i ? i.id : null).filter(Boolean);
+                    const recipeItems = recipe.shape.flat().filter(Boolean);
+                    if (itemsInGrid.length === recipeItems.length && itemsInGrid.every(id => recipeItems.includes(id))) {
+                         matchedRecipe = recipe;
+                         break;
+                    }
+                } else { // Shaped recipe
+                    let match = true;
+                    // This matching logic needs to be more robust for shaped recipes that aren't full size
+                    if (recipe.shape.length > gridSize || recipe.shape[0].length > gridSize) {
+                        match = false;
+                    } else {
+                        for (let r = 0; r < gridSize; r++) {
+                            for (let c = 0; c < gridSize; c++) {
+                                const recipeItem = (recipe.shape[r] && recipe.shape[r][c]) ? recipe.shape[r][c] : null;
+                                const gridItem = currentShape[r][c];
+                                if (recipeItem !== gridItem) {
+                                    match = false;
+                                    break;
+                                }
+                            }
+                            if (!match) break;
+                        }
+                    }
+
+                    if (match) {
+                        matchedRecipe = recipe;
+                        break;
+                    }
+                }
+            }
+            craftingResult = matchedRecipe ? { ...matchedRecipe.output } : null;
+            updateSlot(craftingOutputEl, craftingResult);
+        }
+
+        function getMouseWorldPos(clientX, clientY) {
+            const rect = canvas.getBoundingClientRect();
+            const canvasX = clientX - rect.left;
+            const canvasY = clientY - rect.top;
+            return {
+                x: canvasX + camera.x, y: canvasY + camera.y,
+                blockX: Math.floor((canvasX + camera.x) / BLOCK_SIZE),
+                blockY: Math.floor((canvasY + camera.y) / BLOCK_SIZE)
+            };
+        }
+        
+        // --- Event Listeners ---
+        window.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            if (e.code === 'KeyE') { e.preventDefault(); toggleInventory(); }
+            if(e.code >= 'Digit1' && e.code <= 'Digit9' && !player.isInventoryOpen) {
+                player.selectedSlot = parseInt(e.code.slice(-1)) - 1;
+                updateInventoryUI();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+        window.addEventListener('wheel', (e) => {
+            if (player.isInventoryOpen) return;
+            player.selectedSlot = (player.selectedSlot + Math.sign(e.deltaY) + 9) % 9;
+            updateInventoryUI();
+        });
+        
+        document.addEventListener('mousemove', (e) => {
+             mouseClientX = e.clientX; mouseClientY = e.clientY;
+             if(player.isInventoryOpen) updateHeldItemCursor();
+        });
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (player.isInventoryOpen) return;
+            const mousePos = getMouseWorldPos(e.clientX, e.clientY);
+            if (!mousePos) return;
+            const dist = Math.hypot(mousePos.x - (player.x + player.width / 2), mousePos.y - (player.y + player.height / 2));
+            if (dist > REACH) return;
+
+            if (e.button === 0) { // Left Click
+                let mobClicked = mobs.find(mob => mousePos.x > mob.x && mousePos.x < mob.x + mob.width && mousePos.y > mob.y && mousePos.y < mob.y + mob.height);
+                if (mobClicked) {
+                     const heldItem = player.inventory[player.selectedSlot];
+                     const damage = heldItem && heldItem.damage ? heldItem.damage : 5;
+                     mobClicked.hp -= damage;
+                     mobClicked.lastHitTime = Date.now();
+                } else { // Break block
+                    const block = getItem(mousePos.blockX, mousePos.blockY);
+                    if (block.id !== ITEMS.AIR.id) {
+                         addToInventory(block.id);
+                         setBlock(mousePos.blockX, mousePos.blockY, ITEMS.AIR.id);
+                    }
+                }
+            } else if (e.button === 2) { // Right Click
+                 const block = getItem(mousePos.blockX, mousePos.blockY);
+                 if (block.id === ITEMS.CRAFTING_TABLE.id) {
+                     player.isCraftingTableOpen = true;
+                     toggleInventory();
+                     return;
+                 }
+                 const selectedItem = player.inventory[player.selectedSlot];
+                 if (selectedItem && getItem(mousePos.blockX, mousePos.blockY).id === ITEMS.AIR.id) {
+                      const itemDef = Object.values(ITEMS).find(i => i.id === selectedItem.id);
+                      if (itemDef.solid) {
+                          setBlock(mousePos.blockX, mousePos.blockY, selectedItem.id);
+                          selectedItem.count--;
+                          if(selectedItem.count <= 0) player.inventory[player.selectedSlot] = null;
+                          updateInventoryUI();
+                      }
+                 }
+            }
+        });
+
+        inventoryScreen.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            const slotEl = e.target.closest('.slot');
+            if (!slotEl) return;
+            
+            const { slotType, slotIndex } = slotEl.dataset;
+            let clickedArray = null;
+            let index = parseInt(slotIndex);
+
+            if (slotType === 'inventory') clickedArray = player.inventory;
+            else if (slotType === 'crafting') clickedArray = player.craftingGrid;
+            else if (slotType === 'crafting_output') {
+                 if (e.button === 0 && craftingResult) {
+                     if (!player.heldItem || (player.heldItem.id === craftingResult.id && player.heldItem.count + craftingResult.count <= 64)) {
+                         if (player.heldItem) player.heldItem.count += craftingResult.count;
+                         else player.heldItem = { ...craftingResult };
+
+                         const gridSize = player.isCraftingTableOpen ? 9 : 4;
+                         for(let i=0; i<gridSize; i++) {
+                             if(player.craftingGrid[i]) player.craftingGrid[i].count--;
+                         }
+                         player.craftingGrid = player.craftingGrid.map(item => item && item.count > 0 ? item : null);
+                     }
+                 }
+                 checkCrafting(); updateInventoryUI(); return;
+            } else return;
+            
+            const clickedItem = clickedArray[index];
+            if (e.button === 0) { // Left Click
+                if (player.heldItem && clickedItem && player.heldItem.id === clickedItem.id) {
+                    const canAdd = Math.min(player.heldItem.count, 64 - clickedItem.count);
+                    clickedItem.count += canAdd;
+                    player.heldItem.count -= canAdd;
+                    if (player.heldItem.count <= 0) player.heldItem = null;
+                } else {
+                    [clickedArray[index], player.heldItem] = [player.heldItem, clickedArray[index]];
+                }
+            } else if (e.button === 2) { // Right Click
+                if (!player.heldItem && clickedItem) {
+                    const half = Math.ceil(clickedItem.count / 2);
+                    player.heldItem = { ...clickedItem, count: half };
+                    clickedItem.count -= half;
+                    if (clickedItem.count <= 0) clickedArray[index] = null;
+                } else if (player.heldItem && (!clickedItem || clickedItem.id === player.heldItem.id)) {
+                     if (!clickedArray[index]) clickedArray[index] = { ...player.heldItem, count: 0 };
+                     if (clickedArray[index].count < 64) {
+                        clickedArray[index].count++;
+                        player.heldItem.count--;
+                        if (player.heldItem.count <= 0) player.heldItem = null;
+                     }
+                }
+            }
+
+            checkCrafting();
+            updateInventoryUI();
+        });
+        
+        document.addEventListener('contextmenu', e => e.preventDefault());
+
+        dayNightToggleBtn.addEventListener('click', () => {
+            game.time = game.isDay ? game.dayCycleLength / 2 : 0;
+            updateDayNight();
+        });
+
+        // --- Main Game Loop ---
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- Initialization ---
+        function init() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            generateWorld();
+            findPlayerSpawn();
+            initUI();
+            addToInventory(ITEMS.WOOD.id, 64);
+            gameLoop();
+        }
+        
+        window.addEventListener('resize', () => {
+             canvas.width = window.innerWidth;
+             canvas.height = window.innerHeight;
+        });
+
+        init();
+    </script>
+</body>
+</html>
